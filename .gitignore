@@ -1,0 +1,38 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ── Virtual environments ──
+.venv/
+venv/
+env/
+ENV/
+
+# ── App data (SQLite, auto-generated) ──
+gantt.db
+gantt.db-journal
+gantt.db-wal
+gantt.db-shm
+
+# ── Local exports ──
+gantt_export.json
+
+# ── Environment / secrets ──
+.env
+.env.*
+
+# ── OS files ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor / IDE ──
+.vscode/
+.idea/
+*.swp
+*~
