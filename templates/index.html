@@ -155,6 +155,15 @@
     </div>
     <div class="fg"><label>担当者</label><input id="fAssignee" type="text" placeholder="例: Airi"></div>
     <div class="fg-row">
+      <div class="fg"><label>種別</label>
+        <select id="fKind">
+          <option value="milestone">マイルストーン（点）</option>
+          <option value="task">タスク（バー・自動スケジュール）</option>
+        </select>
+      </div>
+      <div class="fg"><label>effort（日）</label><input id="fEffort" type="number" min="1" value="5"></div>
+    </div>
+    <div class="fg-row">
       <div class="fg">
         <label>進捗</label>
         <div class="prog-row">

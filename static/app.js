@@ -384,6 +384,7 @@ function redraw() {
     const laneName = item.name;
     const cy = laneToY[laneName];
     (msMap[laneName] || []).forEach(ms => {
+      if ((ms.kind || 'milestone') === 'task') { renderTaskBar(ms, cy, totalW, ga); return; }
       const msRank = ms.rank || 1;
       if (msRank < minRank) return;
       const d = parseD(ms.date);
@@ -424,6 +425,13 @@ function redraw() {
       lbl.textContent = ms.name;
 
       wrap.appendChild(dia); wrap.appendChild(lbl);
+      if ((ms.c_slip || 0) > 0) {
+        wrap.classList.add('risk');
+        const sb = document.createElement('span');
+        sb.className = 'slip-badge';
+        sb.textContent = '+' + ms.c_slip + 'd';
+        lbl.appendChild(sb);
+      }
       attachEvents(wrap, ms);
       ga.appendChild(wrap);
     });
@@ -844,6 +852,80 @@ function attachEvents(wrap, ms) {
   wrap.addEventListener('mouseleave', () => wrap.classList.remove('link-hover'));
 }
 
+// ── Task bars (kind='task'): position derived from c_start/c_end; drag = effort伸縮 ──
+function renderTaskBar(ms, cy, totalW, ga) {
+  const s = parseD(ms.c_start || ms.date);
+  const e = parseD(ms.c_end   || ms.date);
+  const left  = dateToCol(s) * colW;
+  const right = dateToCol(e) * colW;
+  const width = Math.max(right - left, 14);
+  if (left + width < -20 || left > totalW + 20) return;
+  const late = (ms.progress || 0) < 100 && e < today0();
+  posCache[ms.id] = { cx: left + width / 2, cy };
+
+  const bar = document.createElement('div');
+  bar.className = 'task-bar' + (late ? ' late' : '');
+  bar.dataset.id = ms.id;
+  bar.style.left  = left + 'px';
+  bar.style.width = width + 'px';
+  bar.style.top   = (cy - 11) + 'px';
+  bar.style.background = ms.color || '#7b8fa8';
+
+  const fill = document.createElement('div');
+  fill.className = 'tb-fill';
+  fill.style.width = (ms.progress || 0) + '%';
+  const lbl = document.createElement('span');
+  lbl.className = 'tb-label';
+  lbl.textContent = ms.name;
+  const grip = document.createElement('span');
+  grip.className = 'tb-grip';
+  bar.appendChild(fill); bar.appendChild(lbl); bar.appendChild(grip);
+
+  attachTaskEvents(bar, ms);
+  ga.appendChild(bar);
+}
+
+function attachTaskEvents(bar, ms) {
+  bar.addEventListener('mousedown', e => {
+    if (linkMode) return;
+    e.preventDefault();
+    wasDragged = false;
+    taskDrag = { bar, ms, sx: e.clientX, origW: parseInt(bar.style.width) };
+    bar.classList.add('dragging');
+  });
+  bar.addEventListener('click', e => {
+    e.stopPropagation();
+    if (linkMode) { handleLinkClick(ms.id, bar); return; }
+    if (wasDragged) return;
+    openEditModal(ms);
+  });
+  bar.addEventListener('contextmenu', e => {
+    e.preventDefault(); e.stopPropagation();
+    showCtxMenu(e.clientX, e.clientY, ms);
+  });
+  bar.addEventListener('mouseenter', () => { if (linkMode && linkSrc && linkSrc !== ms.id) bar.classList.add('link-hover'); });
+  bar.addEventListener('mouseleave', () => bar.classList.remove('link-hover'));
+}
+
+let taskDrag = null;
+document.addEventListener('mousemove', e => {
+  if (!taskDrag) return;
+  const dx = e.clientX - taskDrag.sx;
+  if (Math.abs(dx) < 3) return;
+  wasDragged = true;
+  taskDrag.bar.style.width = Math.max(14, taskDrag.origW + dx) + 'px';
+});
+document.addEventListener('mouseup', () => {
+  if (!taskDrag) return;
+  taskDrag.bar.classList.remove('dragging');
+  const w = parseInt(taskDrag.bar.style.width);
+  const dpc = { day: 1, week: 7, month: 30 }[zoom] || 1;
+  const eff = Math.max(1, Math.round(w / colW) * dpc);
+  socket.emit('update_ms', { ...taskDrag.ms, effort: eff });   // 人もAIも同じ update_ms
+  taskDrag = null;
+  setTimeout(() => { wasDragged = false; }, 0);
+});
+
 // ── Context menu ──
 function showCtxMenu(x, y, ms) {
   ctxMs = ms;
@@ -1090,6 +1172,8 @@ function openAdd(prefill) {
   const defLane = allLanes.length ? allLanes[0].name : 'Lane 1';
   document.getElementById('fLane').value = (prefill && prefill.lane) ? prefill.lane : defLane;
   document.getElementById('fAssignee').value = '';
+  if (document.getElementById('fKind'))   document.getElementById('fKind').value = (prefill && prefill.kind) || 'milestone';
+  if (document.getElementById('fEffort')) document.getElementById('fEffort').value = (prefill && prefill.effort) || 5;
   document.getElementById('fProg').value = 0;
   document.getElementById('pv').textContent = '0%';
   document.getElementById('depSection').style.display = 'none';
@@ -1111,6 +1195,8 @@ function openEditModal(ms) {
   initDeadlineControl();
   document.getElementById('fLane').value = ms.lane || '';
   document.getElementById('fAssignee').value = ms.assignee || '';
+  if (document.getElementById('fKind'))   document.getElementById('fKind').value = ms.kind || 'milestone';
+  if (document.getElementById('fEffort')) document.getElementById('fEffort').value = ms.effort || 1;
   document.getElementById('fProg').value = ms.progress || 0;
   document.getElementById('pv').textContent = (ms.progress || 0) + '%';
   buildRankRow(ms.rank || 2);
@@ -1206,6 +1292,8 @@ function saveMs() {
     progress: parseInt(document.getElementById('fProg').value),
     color:    selColor(),
     rank:     selRank(),
+    kind:     (document.getElementById('fKind')   || {}).value || 'milestone',
+    effort:   parseFloat((document.getElementById('fEffort') || {}).value) || 0,
   };
   if (!d.date) { alert('期限日を入力してください'); return; }
   if (editId) socket.emit('update_ms', { ...d, id: editId });

@@ -462,3 +462,18 @@ body.link-mode .ms.link-source { cursor: default; }
 .cat-popup-item:hover { background: rgba(0,0,0,.05); }
 .cat-popup-item.active { font-weight: 600; }
 .cat-popup-sep { height: 1px; background: var(--border2); margin: 3px 0; }
+
+
+/* ════ tasks (kind='task') & at-risk — merged task layer ════ */
+.task-bar{position:absolute;height:22px;border-radius:6px;display:flex;align-items:center;
+  padding:0 9px;color:#fff;font-size:11px;white-space:nowrap;overflow:hidden;cursor:grab;
+  box-shadow:0 1px 2px rgba(0,0,0,.18);user-select:none;z-index:5}
+.task-bar .tb-fill{position:absolute;left:0;top:0;bottom:0;background:rgba(0,0,0,.24);
+  border-radius:6px 0 0 6px;pointer-events:none}
+.task-bar .tb-label{position:relative;z-index:1;text-shadow:0 1px 1px rgba(0,0,0,.3);pointer-events:none}
+.task-bar .tb-grip{position:absolute;right:0;top:0;bottom:0;width:9px;cursor:ew-resize;
+  background:rgba(255,255,255,.28);border-radius:0 6px 6px 0}
+.task-bar.dragging{cursor:ew-resize;box-shadow:0 3px 10px rgba(0,0,0,.32);z-index:20}
+.task-bar.late{box-shadow:0 0 0 2px #e5484d,0 1px 2px rgba(229,72,77,.4)}
+.ms.risk .ms-diamond{background:#e5484d !important}
+.slip-badge{display:inline-block;margin-left:5px;font-size:10px;font-weight:700;color:#e5484d}

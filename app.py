@@ -61,7 +61,9 @@ def init_db():
                 assignee TEXT,
                 progress INTEGER DEFAULT 0,
                 color    TEXT,
-                rank     INTEGER DEFAULT 2
+                rank     INTEGER DEFAULT 2,
+                kind     TEXT DEFAULT 'milestone',
+                effort   REAL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS deps (
                 id      TEXT PRIMARY KEY,
@@ -81,6 +83,10 @@ def init_db():
             existing = [r[1] for r in db.execute("PRAGMA table_info(lanes)")]
             if col not in existing:
                 db.execute(f'ALTER TABLE lanes ADD COLUMN {col} {typedef}')
+        for col, typedef in [('kind', "TEXT DEFAULT 'milestone'"), ('effort', 'REAL DEFAULT 0')]:
+            existing = [r[1] for r in db.execute("PRAGMA table_info(milestones)")]
+            if col not in existing:
+                db.execute(f'ALTER TABLE milestones ADD COLUMN {col} {typedef}')
 
 
 def load_from_db():
@@ -118,9 +124,11 @@ def save_milestones():
     with get_db() as db:
         db.execute('DELETE FROM milestones')
         db.executemany(
-            'INSERT INTO milestones(id,name,date,lane,assignee,progress,color,rank) '
-            'VALUES(:id,:name,:date,:lane,:assignee,:progress,:color,:rank)',
-            list(milestones.values()))
+            'INSERT INTO milestones(id,name,date,lane,assignee,progress,color,rank,kind,effort) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?)',
+            [(m['id'], m.get('name'), m.get('date'), m.get('lane'), m.get('assignee'),
+              m.get('progress', 0), m.get('color'), m.get('rank', 2),
+              m.get('kind', 'milestone'), m.get('effort', 0)) for m in milestones.values()])
 
 
 def save_deps():
@@ -135,6 +143,64 @@ def save_comments_for(ms_id):
         for c in comments.get(ms_id, []):
             db.execute('INSERT INTO comments(id,ms_id,author,text,ts) VALUES(?,?,?,?,?)',
                        (c['id'], ms_id, c['author'], c['text'], c['ts']))
+
+
+def _pdate(s):
+    return datetime.strptime(s, '%Y-%m-%d').date()
+
+
+def compute_schedule():
+    """Forward pass. dep(from->to) = `from` precedes `to`. Derived, never stored.
+    task:  start = max(prereq ends) or project start; end = start + effort days.
+    ms:    target = its date; ready = max(prereq ends) or target; slip = ready - target."""
+    prereq = {}
+    for d in deps:
+        prereq.setdefault(d['to_id'], []).append(d['from_id'])
+    all_dates = [_pdate(m['date']) for m in milestones.values() if m.get('date')]
+    proj0 = min(all_dates) if all_dates else datetime.now().date()
+    memo, visiting, out = {}, set(), {}
+
+    def end_of(mid):
+        if mid in memo:
+            return memo[mid]
+        if mid in visiting:                       # cycle guard
+            return proj0
+        m = milestones.get(mid)
+        if not m:
+            return proj0
+        visiting.add(mid)
+        pre = [end_of(p) for p in prereq.get(mid, []) if p in milestones]
+        if (m.get('kind') or 'milestone') == 'task':
+            start = max(pre) if pre else proj0
+            eff = int(m.get('effort') or 1)
+            end = start + timedelta(days=max(1, eff))
+            out[mid] = {'kind': 'task', 'c_start': start.isoformat(), 'c_end': end.isoformat()}
+            memo[mid] = end
+        else:
+            target = _pdate(m['date']) if m.get('date') else proj0
+            ready = max(pre) if pre else target
+            out[mid] = {'kind': 'milestone', 'c_ready': ready.isoformat(),
+                        'c_slip': (ready - target).days}
+            memo[mid] = ready
+        visiting.discard(mid)
+        return memo[mid]
+
+    for mid in list(milestones):
+        end_of(mid)
+    return out
+
+
+def ms_view():
+    """Milestones augmented with derived schedule, for the renderer / API."""
+    sched = compute_schedule()
+    rows = []
+    for m in milestones.values():
+        c = dict(m)
+        c.setdefault('kind', 'milestone')
+        c.setdefault('effort', 0)
+        c.update(sched.get(m['id'], {}))
+        rows.append(c)
+    return rows
 
 
 def _seed():
@@ -172,11 +238,28 @@ def _seed():
         tid = str(uuid.uuid4())
         date = str(today + timedelta(days=off))
         milestones[tid] = dict(id=tid, name=name, date=date, lane=lane_name,
-                               assignee=assignee, progress=progress, color=color, rank=rank)
+                               assignee=assignee, progress=progress, color=color, rank=rank,
+                               kind='milestone', effort=0)
         ids.append(tid)
     chains = [(0,1),(1,2),(1,3),(2,4),(3,4),(4,5),(5,6),(6,7)]
     for f, t in chains:
         deps.append({"id": str(uuid.uuid4()), "from_id": ids[f], "to_id": ids[t]})
+
+    # sample TASKS (kind='task'): bar position is derived from deps + effort
+    t_defs = [("API実装",   "Phase 2", "Bunta", "#7b8fa8", 6, 60),
+              ("画面実装",   "Phase 2", "Daiki", "#a08060", 5, 20),
+              ("結合テスト", "Phase 3", "Chiyo", "#8a6070", 4, 0)]
+    t_ids = []
+    for name, lane_name, assignee, color, effort, progress in t_defs:
+        tid = str(uuid.uuid4())
+        milestones[tid] = dict(id=tid, name=name, date=str(today), lane=lane_name,
+                               assignee=assignee, progress=progress, color=color, rank=1,
+                               kind='task', effort=effort)
+        t_ids.append(tid)
+    tdeps = [(ids[3], t_ids[0]), (ids[1], t_ids[1]),
+             (t_ids[0], t_ids[2]), (t_ids[1], t_ids[2]), (t_ids[2], ids[6])]
+    for f, t in tdeps:
+        deps.append({"id": str(uuid.uuid4()), "from_id": f, "to_id": t})
 
     save_categories(); save_lanes(); save_milestones(); save_deps()
 
@@ -239,7 +322,7 @@ def import_json():
                                (c['id'], ms_id, c['author'], c['text'], c['ts']))
 
         socketio.emit('categories_update', categories)
-        socketio.emit('ms_update',    list(milestones.values()))
+        socketio.emit('ms_update',    ms_view())
         socketio.emit('deps_update',  deps)
         socketio.emit('lanes_update', lanes)
 
@@ -284,7 +367,7 @@ def _add_cors(resp):
 def push_state():
     """Broadcast the whole board to every connected browser."""
     socketio.emit('categories_update', categories)
-    socketio.emit('ms_update',    list(milestones.values()))
+    socketio.emit('ms_update',    ms_view())
     socketio.emit('deps_update',  deps)
     socketio.emit('lanes_update', lanes)
 
@@ -325,7 +408,7 @@ def api_state():
     return jsonify({
         "categories": categories,
         "lanes":      lanes,
-        "milestones": list(milestones.values()),
+        "milestones": ms_view(),
         "deps":       deps,
         "comments":   comments,
     })
@@ -338,7 +421,7 @@ def api_lanes():
 
 @app.route('/api/milestones')
 def api_list_ms():
-    return jsonify(list(milestones.values()))
+    return jsonify(ms_view())
 
 
 @app.route('/api/milestones', methods=['POST'])
@@ -362,6 +445,8 @@ def api_create_ms():
         "progress": progress,
         "color":    data.get('color') or random.choice(API_PALETTE),
         "rank":     rank,
+        "kind":     'task' if data.get('kind') == 'task' else 'milestone',
+        "effort":   max(0.0, float(data.get('effort') or 0)),
     }
     milestones[tid] = ms
     save_milestones()
@@ -393,6 +478,8 @@ def api_update_ms(mid):
         if 'progress' in data: ms['progress'] = max(0, min(100, int(data['progress'] or 0)))
         if 'rank' in data:     ms['rank'] = max(1, min(3, int(data['rank'] or 2)))
         if data.get('color'):  ms['color'] = data['color']
+        if 'kind' in data:     ms['kind'] = 'task' if data['kind'] == 'task' else 'milestone'
+        if 'effort' in data:   ms['effort'] = max(0.0, float(data['effort'] or 0))
     except (ValueError, TypeError):
         return _err("`progress` and `rank` must be numbers")
     save_milestones()
@@ -491,7 +578,7 @@ def api_delete_dep(did):
 
 def broadcast_state():
     emit('categories_update', categories,               broadcast=True)
-    emit('ms_update',         list(milestones.values()), broadcast=True)
+    emit('ms_update',         ms_view(), broadcast=True)
     emit('deps_update',       deps,                      broadcast=True)
     emit('lanes_update',      lanes,                     broadcast=True)
 
@@ -501,7 +588,7 @@ def on_connect():
     global connected_users
     connected_users += 1
     emit('categories_update', categories)
-    emit('ms_update',    list(milestones.values()))
+    emit('ms_update',    ms_view())
     emit('deps_update',  deps)
     emit('lanes_update', lanes)
     emit('user_count',   connected_users, broadcast=True)
@@ -517,7 +604,7 @@ def on_disconnect():
 @socketio.on('get_state')
 def on_get():
     emit('categories_update', categories)
-    emit('ms_update',    list(milestones.values()))
+    emit('ms_update',    ms_view())
     emit('deps_update',  deps)
     emit('lanes_update', lanes)
 
@@ -634,7 +721,7 @@ def on_move_lane(data):
 @socketio.on('add_ms')
 def on_add_ms(data):
     tid = str(uuid.uuid4())
-    milestones[tid] = {**data, 'id': tid}
+    milestones[tid] = {'kind': 'milestone', 'effort': 0, **data, 'id': tid}
     save_milestones()
     broadcast_state()
 
